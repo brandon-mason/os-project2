@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "whaaaat",
+            "type": "cppdbg",
+            "preLaunchTask": "gcc-11",
+            "request": "launch",
+            "program": "${workspaceRoot}/a.out",
+            "args": ["5", "6", "30"],
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [],
+            "externalConsole": true,
+            "MIMode": "lldb"
+        }
+
+    ]
+}
