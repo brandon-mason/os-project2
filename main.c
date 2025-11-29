@@ -19,13 +19,20 @@ typedef struct {
     pthread_t thread;
     int hand[DECK_START_AMT];
     size_t handLen;
-    int isDealer;
+    int hasPlayed;
     gameData_t* gameData;
+    int isDealer;
 } player_t;
 
 struct gameData {
     int numPlayers;
     int numCookies;
+    int cardsDealt;
+
+    int startedCount;
+    pthread_mutex_t startMutex;
+    pthread_cond_t  startCond;
+    int startReady; 
 
     int currentDealer;
     int currentPlayer;
@@ -42,7 +49,8 @@ struct gameData {
     pthread_mutex_t mutexMaster;
     pthread_cond_t condMaster;
 
-    int turn;
+
+    int finishedThisRound;
     pthread_mutex_t mutexRound;
     pthread_cond_t condRound;
 
@@ -141,8 +149,8 @@ void choose(gameData_t* gameData) {
     pthread_cond_signal(&gameData->condShuffled);
     pthread_mutex_unlock(&gameData->mutexShuffled);
 
+    pthread_mutex_lock(&gameData->mutexMaster);
     gameData->cookieMaster = selectCM(deck);
-
     pthread_cond_signal(&gameData->condMaster);
     pthread_mutex_unlock(&gameData->mutexMaster);
 
@@ -188,63 +196,146 @@ void* play(void *arg) {
     player_t* player = (player_t*)arg;
     gameData_t* gameData = player->gameData;
     int id = player->id;
-    printf("Thread for player %d started\n", player->id);
+    // printf("1Thread for player %d started\n", player->id);
 
     for (int round = 0; round < gameData->numPlayers; round++) {
+    // while(gameData->round < gameData->numPlayers) {
+        // printf("round %d, currentPlayer %d, currentDealer %d, thread %d\n", gameData->round, gameData->currentPlayer, gameData->currentDealer, id);
+        // printf("%d round %d\n", id, gameData->round);
+
+        pthread_mutex_lock(&gameData->mutexDeal);
+            // printf("%d is ID: dealer %d...\n", id, gameData->currentDealer);
+            if(id == gameData->currentDealer && gameData->cardsDealt == 0) {
+                printf("%d---- Round %d Start ----\n", id, gameData->currentDealer);
+                // printf("Player %d is dealer\n", gameData->currentDealer);
+
+                // shuffle(gameData);
+                // choose(gameData);
+                // deal(gameData);
+                printf("%d DEALT\n", id);
+                gameData->players[id].isDealer = 1;
+                gameData->cardsDealt = 1;
+
+            }
+            pthread_cond_signal(&gameData->condDeal);
+        pthread_mutex_unlock(&gameData->mutexDeal);
+
         pthread_mutex_lock(&gameData->mutexRound);
-        printf("RUNNING THREAD:  %d\n", id);
-
-        while(id != gameData->currentDealer) {
-            // printf("Player %d is dealer: Waiting for current dealer to be %d...\n", id, gameData->currentDealer);
-            pthread_cond_wait(&gameData->condRound, &gameData->mutexRound);
-        }
-
-        if(id == gameData->currentDealer) {
-            // printf("Player %d is dealer: ID %d...\n", gameData->currentDealer, id);
-            // printf("Player %d is dealer\n", gameData->currentDealer);
-
-            // pthread_mutex_unlock(&gameData->mutexTurn);
-
-            shuffle(gameData);
-            choose(gameData);
-            // deal(gameData);
-
-            // pthread_mutex_lock(&gameData->mutexTurn);
-            gameData->currentPlayer = (gameData->currentPlayer + 1) % gameData->numPlayers;
-            // printf("Player %d is dealer: currentPlayer %d...\n", gameData->currentDealer, gameData->currentPlayer);
-            pthread_cond_signal(&gameData->condRound);
-        }
+            pthread_mutex_lock(&gameData->mutexRound);
+            gameData->cardsDealt = 1;
+            pthread_cond_broadcast(&gameData->condRound);
+            pthread_mutex_unlock(&gameData->mutexRound);
         pthread_mutex_unlock(&gameData->mutexRound);
-        // else pthread_mutex_unlock(&gameData->mutexTurn);
 
-        // printf("Player %d is dealer: current player is %d...\n", gameData->currentDealer);
+        pthread_mutex_lock(&gameData->mutexDeal);
+            while(gameData->cardsDealt == 0) {
+                printf("%d      WAIT Cards not dealt %d\n", id, gameData->currentPlayer);
+                pthread_cond_wait(&gameData->condDeal, &gameData->mutexDeal);
+                printf("%d      POST WAIT Cards dealt %d\n", id, gameData->currentPlayer);
+            }
+        pthread_mutex_unlock(&gameData->mutexDeal);
+
         pthread_mutex_lock(&gameData->mutexTurn);
-        while (id == gameData->currentPlayer) {
-            printf("Player %d is dealer: Waiting for ID %d to be %d...\n", gameData->currentDealer, id, gameData->currentPlayer);
-            pthread_cond_wait(&gameData->condTurn, &gameData->mutexTurn);
-        }
-        // printf("Player %d is dealer. Player %d taking turn\n", gameData->currentDealer, gameData->currentPlayer);
-        printf("Player %d is dealer: ID %d with current player %d...\n", gameData->currentDealer, id, gameData->currentPlayer);
+        printf("230\n");
+            if(gameData->currentPlayer == gameData->currentDealer) {
+                printf("%d is dealer...\n", id);
+                gameData->currentPlayer = (gameData->currentPlayer + 1) % gameData->numPlayers;
+                pthread_cond_signal(&gameData->condTurn);
+            }
 
-        gameData->currentPlayer = (gameData->currentPlayer + 1) % gameData->numPlayers;
-        pthread_cond_signal(&gameData->condTurn);
         pthread_mutex_unlock(&gameData->mutexTurn);
 
         pthread_mutex_lock(&gameData->mutexTurn);
 
-        printf("Player %d is dealer: current player changed to %d...\n", gameData->currentDealer, gameData->currentPlayer);
-        if (gameData->currentPlayer == gameData->currentDealer) {
-            gameData->currentDealer = (gameData->currentDealer + 1) % gameData->numPlayers;
-            gameData->currentPlayer = gameData->currentDealer;
-            printf("Dealer changed to %d: current player changed to %d...\n\n", gameData->currentDealer, gameData->currentPlayer);
-            pthread_cond_signal(&gameData->condTurn);
-        } 
-        // pthread_cond_signal(&gameData->condTurn);
+            while (id != gameData->currentPlayer) {
+                printf("%d      WAIT Not Your Turn %d...\n", id, gameData->currentPlayer);
+                pthread_cond_wait(&gameData->condTurn, &gameData->mutexTurn);
+                printf("%d      POST WAIT Not Your Turn %d...%d\n", id, gameData->currentPlayer, gameData->currentDealer);
+                printf("%d      POST WAIT Not Your cdns %d...\n", id, id != gameData->currentPlayer);
+            }
+
+            if(gameData->players[id].isDealer == 0) {
+                player->hasPlayed = 0;
+            }
+
+        pthread_mutex_unlock(&gameData->mutexTurn);
+            
+        pthread_mutex_lock(&gameData->mutexTurn);
+                printf("%d currentPlayer4 %d\n", id, (gameData->currentPlayer + 1) % gameData->numPlayers);
+                printf("%d currentDealer4 %d\n", id, gameData->currentDealer);
+            if ((gameData->currentPlayer + 1) % gameData->numPlayers == gameData->currentDealer) {
+                printf("%d -Your Turn(last) %d...\n", id, (gameData->currentPlayer) % gameData->numPlayers);
+                gameData->currentDealer = (gameData->currentDealer + 1) % gameData->numPlayers;
+                gameData->currentPlayer = gameData->currentDealer;
+
+                for(int p = 0; p < gameData->numPlayers; p++) {
+                    gameData->players[p].hasPlayed = 0;
+                }
+
+                // printf("%d currentPlayer5 %d\n", id, gameData->currentPlayer);
+                // printf("%d currentDealer5 %d\n", id, gameData->currentDealer);
+                printf("%d|  signal turn 1\n", id);
+                pthread_cond_signal(&gameData->condTurn);
+
+                printf("\nDealer changed to %d\nCurrent player changed to %d...\n\n", gameData->currentDealer, gameData->currentPlayer);
+            } else if (gameData->players[id].hasPlayed == 0 && id != gameData->currentDealer) {
+                printf("%d -Your Turn %d...\n", id, gameData->currentPlayer);
+                // printf("%d CurrDealer %d...\n", id, gameData->currentDealer);
+                gameData->currentPlayer = (gameData->currentPlayer + 1) % gameData->numPlayers;
+                // printf("%d After %d...\n", id, gameData->currentPlayer);
+                // printf("%d|  signal turn 2\n", id);
+                pthread_cond_broadcast(&gameData->condTurn);
+            }
+            // printf("       current player %d...\n", player->hasPlayed);
         pthread_mutex_unlock(&gameData->mutexTurn);
 
-        // if(gameData->currentDealer == )
+        pthread_mutex_lock(&gameData->mutexRound);
+            gameData->finishedThisRound++;
+            printf("%d mutexRound...%d\n", id, gameData->finishedThisRound);
+
+            if (gameData->finishedThisRound == gameData->numPlayers - 1) {
+                gameData->finishedThisRound = 0;
+                pthread_cond_broadcast(&gameData->condRound);
+            } else {
+                while (gameData->finishedThisRound != 0) {
+                    pthread_cond_wait(&gameData->condRound, &gameData->mutexRound);
+                }
+            }
+
+        pthread_mutex_unlock(&gameData->mutexRound);
+
+        pthread_mutex_lock(&gameData->mutexDeal);
+            printf("%d  before if...\n", id);
+
+            // if(gameData->currentPlayer == id) {
+            //     gameData->players[id].isDealer = 1;
+            //     printf("%d  inside if %d...\n", id, gameData->players[id].isDealer);
+            // }
+
+            if (gameData->players[id].isDealer == 1) {
+                printf("%d set dealt and dealer\n", id);
+                gameData->cardsDealt = 0;
+                gameData->players[id].isDealer = 0;
+                // gameData->round++;
+
+
+                // for(int p = 0; p < gameData->numPlayers; p++) {
+                //     gameData->players[p].hasPlayed = 0;
+                // }
+                pthread_cond_signal(&gameData->condDeal);
+
+                printf("%d ||  signal deal 1\n", id);
+                // printf("%d---- Round %d Over ----\n", id, round);
+            } else {
+                // player->hasPlayed = 1;
+                // gameData->players[id].isDealer = 1;
+                printf("%d  signal else %d...\n", id, gameData->players[id].isDealer);
+                pthread_cond_signal(&gameData->condDeal);
+            }
+            // printf("%d deal ctir sec %d\n\n", id, gameData->cardsDealt);
+        pthread_mutex_unlock(&gameData->mutexDeal);
     }
-
+    printf("GOODBYE %d\n", id);
     return NULL;
 }
 
@@ -262,7 +353,7 @@ int main(int argc, char *argv[]) {
     deck.size = DECK_START_AMT;
     deck.shuffled = 0;
 
-    for(int i = 0; i < DECK_START_AMT; i++) {
+    for(int i = 1; i < DECK_START_AMT; i++) {
         deck.cards[i] = (i / 4) + 1;
     }
 
@@ -276,31 +367,46 @@ int main(int argc, char *argv[]) {
     gameData.players = players;
     gameData.currentDealer = 0;
     gameData.currentPlayer = 0;
-    gameData.turn = 0;
+    gameData.finishedThisRound = 0;
+    gameData.startedCount = 0;
+    gameData.startReady = 0;
+    gameData.cardsDealt = 0;
 
 
-    pthread_mutex_t mutexShuffled, mutexMaster, mutexTurn, mutexRound, mutexDeal = PTHREAD_MUTEX_INITIALIZER;
-    pthread_cond_t condShuffled, condMaster, condTurn, condRound, condDeal = PTHREAD_COND_INITIALIZER;
+    pthread_mutex_t mutexShuffled, mutexMaster, mutexTurn, mutexRound, mutexDeal;
+    pthread_cond_t condShuffled, condMaster, condTurn, condRound, condDeal;
 
     pthread_mutex_init(&mutexShuffled, NULL);
-    pthread_mutex_init(&mutexMaster, NULL);
-    pthread_mutex_init(&mutexTurn, NULL);
-    pthread_mutex_init(&mutexRound, NULL);
-    pthread_mutex_init(&mutexDeal, NULL);
     pthread_cond_init(&condShuffled, NULL);
-    pthread_cond_init(&condMaster, NULL);
-    pthread_cond_init(&condTurn, NULL);
-    pthread_cond_init(&condRound, NULL);
-    pthread_cond_init(&condDeal, NULL);
-
     gameData.mutexShuffled = mutexShuffled;
-    gameData.mutexMaster = mutexMaster;
-    gameData.mutexTurn = mutexTurn;
-    gameData.mutexDeal = mutexDeal;
     gameData.condShuffled = condShuffled;
+
+    pthread_mutex_init(&mutexMaster, NULL);
+    pthread_cond_init(&condMaster, NULL);
+    gameData.mutexMaster = mutexMaster;
     gameData.condMaster = condMaster;
+
+    pthread_mutex_init(&mutexTurn, NULL);
+    pthread_cond_init(&condTurn, NULL);
+    gameData.mutexTurn = mutexTurn;
     gameData.condTurn = condTurn;
+
+    pthread_mutex_init(&mutexRound, NULL);
+    pthread_cond_init(&condRound, NULL);
+    gameData.mutexDeal = mutexRound;
+    gameData.condDeal = condRound;
+
+    pthread_mutex_init(&mutexDeal, NULL);
+    pthread_cond_init(&condDeal, NULL);
     gameData.condDeal = condDeal;
+    gameData.mutexDeal = mutexDeal;
+
+
+
+
+
+    pthread_mutex_init(&gameData.startMutex, NULL);
+    pthread_cond_init(&gameData.startCond, NULL);
 
     // for(int i = 0; i < numPlayers; i++) {
     //     players[i].id = i;
@@ -314,6 +420,8 @@ int main(int argc, char *argv[]) {
     for(int i = 0; i < numPlayers; i++) {
         players[i].id = i;
         players[i].handLen = 0;
+        players[i].isDealer = 0;
+        players[i].hasPlayed = 0;
         players[i].gameData = &gameData;
 
         pthread_create(&players[i % numPlayers].thread, NULL, play, &players[i % numPlayers]);
