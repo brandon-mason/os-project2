@@ -64,6 +64,11 @@ struct gameData
     int printedCount;
     pthread_mutex_t mutexPrint;
     pthread_cond_t condPrint;
+
+    pthread_cond_t* condDealArray;
+    pthread_cond_t* condTurnArray;
+    pthread_cond_t* condRoundArray;
+    pthread_cond_t* condPrintArray;
 };
 
 int selectTop(deck_t *deck)
@@ -127,7 +132,7 @@ void showDeck(deck_t *deck)
 
 void showHand(player_t *player)
 {
-    printf("PLAYER 2: hand ");
+    printf("PLAYER %d: hand ", player->id + 1);
 
     for (int i = 0; i < player->handLen; i++)
     {
@@ -139,8 +144,9 @@ void showHand(player_t *player)
 
 void eatCookies(gameData_t *gameData, int playerId)
 {
-    int randCookies = rand() % 2;
-    printf("PLAYER %d: eats %d Cookies\n", playerId, randCookies);
+    int randCookies = rand() % 2 + 1;
+    printf("BAG: %d Cookies left\n", gameData->cookiesLeft);
+    printf("PLAYER %d: eats %d Cookie(s)\n", playerId + 1, randCookies);
     gameData->cookiesLeft = gameData->cookiesLeft - randCookies;
     if (gameData->cookiesLeft <= 0)
         gameData->cookiesLeft = gameData->numCookies;
@@ -158,7 +164,7 @@ void drawCard(gameData_t *gameData, player_t *player)
     player->hand[handLen] = topCard;
     player->handLen++;
 
-    printf("PLAYER %d: draws %s\n", player->id, printCard(topCard));
+    printf("PLAYER %d: draws %s\n", player->id + 1, printCard(topCard));
 }
 
 void discardCard(player_t *player, deck_t *deck)
@@ -176,18 +182,18 @@ void discardCard(player_t *player, deck_t *deck)
     deck->cards[deck->size] = randomCard;
     deck->size++;
 
-    printf("PLAYER %d: discards %s at random\n", player->id, printCard(randomCard));
+    printf("PLAYER %d: discards %s at random\n", player->id + 1, printCard(randomCard));
 }
 
 void playerWon(gameData_t *gameData, player_t *player)
 {
     int winnerId = player->id;
-    printf("PLAYER %d: wins round %d\n", winnerId, gameData->roundCount + 1);
+    printf("PLAYER %d: wins round %d\n", winnerId + 1, gameData->roundCount + 1);
 
     int currentLoserId = winnerId + 1;
     while (currentLoserId != winnerId)
     {
-        printf("PLAYER %d: lost round %d\n", currentLoserId, gameData->roundCount + 1);
+        printf("PLAYER %d: lost round %d\n", currentLoserId + 1, gameData->roundCount + 1);
         currentLoserId = (currentLoserId + 1) % gameData->numPlayers;
     }
 }
@@ -290,21 +296,25 @@ void *play(void *arg)
 
         // ========== DEALING PHASE ==========
         pthread_mutex_lock(&gameData->mutexDealPhase);
+        // printf("%d %d %d\n", id, gameData->currentDealer, gameData->cardsDealt);
         if (id == gameData->currentDealer && gameData->cardsDealt == 0)
         {
-            printf("%d---- Round %d Start ----\n", id, gameData->roundCount + 1);
+            printf("---- Round %d Start ----\n", gameData->roundCount + 1);
             shuffle(gameData);
             choose(gameData);
             deal(gameData);
-            printf("%d DEALT\n", id);
             gameData->cardsDealt = 1;
-            pthread_cond_broadcast(&gameData->condDealPhase);
+            // pthread_cond_broadcast(&gameData->condDealPhase);
+            for (int i = 0; i < gameData->numPlayers; i++) {
+                int index = (gameData->currentDealer + i) % gameData->numPlayers;
+                    pthread_cond_signal(&gameData->condDealArray[index]);
+            }
         }
         else
         {
             while (gameData->cardsDealt == 0)
             {
-                pthread_cond_wait(&gameData->condDealPhase, &gameData->mutexDealPhase);
+                pthread_cond_wait(&gameData->condDealArray[id], &gameData->mutexDealPhase);
             }
         }
         pthread_mutex_unlock(&gameData->mutexDealPhase);
@@ -313,7 +323,7 @@ void *play(void *arg)
         pthread_mutex_lock(&gameData->mutexTurn);
         while (id != gameData->currentPlayer && id != gameData->currentDealer)
         {
-            pthread_cond_wait(&gameData->condTurn, &gameData->mutexTurn);
+            pthread_cond_wait(&gameData->condTurnArray[id], &gameData->mutexTurn);
         }
         pthread_mutex_unlock(&gameData->mutexTurn);
 
@@ -327,15 +337,15 @@ void *play(void *arg)
             if (win != -1)
             {
                 showHand(player);
-                printf("Cookie Master card is %d\n", gameData->cookieMaster);
+                printf("Cookie Master card is %s\n", printCard(gameData->cookieMaster));
                 gameData->roundWon = 1;
                 player->winner = 1;
             }
             else
             {
                 int random = rand() % (player->handLen + 1);
-                discardCard(player, &gameData->deck);
                 showHand(player);
+                discardCard(player, &gameData->deck);
                 showDeck(&gameData->deck);
             }
         }
@@ -371,11 +381,12 @@ void *play(void *arg)
                 eatCookies(gameData, id);
             }
             gameData->currentPlayer = (gameData->currentPlayer + 1) % gameData->numPlayers;
-            pthread_cond_broadcast(&gameData->condTurn);
+            pthread_cond_signal(&gameData->condTurnArray[gameData->currentPlayer]);
             pthread_mutex_unlock(&gameData->mutexTurn);
         }
         else
         {
+            player->winner = -1;
             pthread_mutex_unlock(&gameData->mutexRound);
         }
 
@@ -390,13 +401,16 @@ void *play(void *arg)
             gameData->turnCount = 0;
             gameData->roundCount++;
 
-            pthread_cond_broadcast(&gameData->condRound);
+            for (int i = 0; i < gameData->numPlayers; i++) {
+                int index = (gameData->currentDealer + i) % gameData->numPlayers;
+                    pthread_cond_signal(&gameData->condRoundArray[index]);
+            }
         }
         else
         {
             while (gameData->roundCount == roundCountCp)
             {
-                pthread_cond_wait(&gameData->condRound, &gameData->mutexRound);
+                pthread_cond_wait(&gameData->condRoundArray[id], &gameData->mutexRound);
             }
         }
         pthread_mutex_unlock(&gameData->mutexRound);
@@ -406,13 +420,20 @@ void *play(void *arg)
         if (player->winner == 1)
         {
             printf("PLAYER %d: wins round %d\n", id + 1, gameData->roundCount);
+
         }
-        else
+        else if (player->winner == 0)
         {
             printf("PLAYER %d: lost round %d\n", id + 1, gameData->roundCount);
         }
-        player->winner = 0;
-        pthread_cond_broadcast(&gameData->condTurn);
+
+        if(id == gameData->currentDealer) player->winner = -1;
+        else player->winner = 0;
+
+        for (int i = 0; i < gameData->numPlayers; i++) {
+            int index = (gameData->currentDealer + i) % gameData->numPlayers;
+                pthread_cond_signal(&gameData->condTurnArray[index]);
+        }
         pthread_mutex_unlock(&gameData->mutexTurn);
 
         int printCountCp = gameData->printCount;
@@ -424,13 +445,16 @@ void *play(void *arg)
             gameData->printedCount = 0;
             gameData->printCount++;
 
-            pthread_cond_broadcast(&gameData->condPrint);
+            for (int i = 0; i < gameData->numPlayers; i++) {
+                int index = (gameData->currentDealer + i) % gameData->numPlayers;
+                    pthread_cond_signal(&gameData->condPrintArray[index]);
+            }
         }
         else
         {
             while (gameData->printCount == printCountCp)
             {
-                pthread_cond_wait(&gameData->condPrint, &gameData->mutexPrint);
+                pthread_cond_wait(&gameData->condPrintArray[id], &gameData->mutexPrint);
             }
         }
         pthread_mutex_unlock(&gameData->mutexPrint);
@@ -450,7 +474,7 @@ int main(int argc, char *argv[])
     deck.size = DECK_START_AMT;
     deck.shuffled = 0;
 
-    for (int i = 1; i < DECK_START_AMT; i++)
+    for (int i = 0; i < DECK_START_AMT; i++)
     {
         deck.cards[i] = (i / 4) + 1;
     }
@@ -474,6 +498,32 @@ int main(int argc, char *argv[])
 
     pthread_mutex_t mutexShuffled, mutexMaster, mutexTurn, mutexRound, mutexDealPhase, mutexDeal, mutexPrint;
     pthread_cond_t condShuffled, condMaster, condTurn, condRound, condDealPhase, condDeal, condPrint;
+    pthread_cond_t condTurnArray[numPlayers];
+    pthread_cond_t condDealArray[numPlayers];
+    pthread_cond_t condRoundArray[numPlayers];
+    pthread_cond_t condPrintArray[numPlayers];
+
+    gameData.condDealArray = malloc(numPlayers * sizeof(pthread_cond_t));
+    gameData.condTurnArray = malloc(numPlayers * sizeof(pthread_cond_t));
+    gameData.condRoundArray = malloc(numPlayers * sizeof(pthread_cond_t));
+    gameData.condPrintArray = malloc(numPlayers * sizeof(pthread_cond_t));
+
+    for(int i = 0; i < numPlayers; i++) {
+        pthread_cond_init(&condDealArray[i], NULL);
+        gameData.condDealArray[i] = condDealArray[i];
+    }
+    for(int i = 0; i < numPlayers; i++) {
+        pthread_cond_init(&condTurnArray[i], NULL);
+        gameData.condTurnArray[i] = condTurnArray[i];
+    }
+    for(int i = 0; i < numPlayers; i++) {
+        pthread_cond_init(&condRoundArray[i], NULL);
+        gameData.condRoundArray[i] = condRoundArray[i];
+    }
+    for(int i = 0; i < numPlayers; i++) {
+        pthread_cond_init(&condPrintArray[i], NULL);
+        gameData.condPrintArray[i] = condPrintArray[i];
+    }
 
     pthread_mutex_init(&mutexShuffled, NULL);
     pthread_cond_init(&condShuffled, NULL);
